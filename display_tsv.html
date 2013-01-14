@@ -1,165 +1,260 @@
 <!DOCTYPE html>
-<meta charset="utf-8">
-<style>
+<html>
+  <head>
+    <meta charset="utf-8"></meta>
+    <title>http/2 header compressions</title>
+    <style>
+      
+      body {
+        font-family: 'helvetica neue', sans-serif;
+        font-size: 10px;
+        color: #404245;
+      }
+      
+      .page {
+        padding: 10px 20px;
+      }
+      
+      .axis path,
+      .axis line {
+        fill: none;
+        stroke: #404245;
+        shape-rendering: crispEdges;
+      }
+      
+      .x.axis path  {
+        stroke: #404245;
+      }
+      
+      .y.axis line {
+        stroke: #eee;
+      }
+      
+      .y.axis path {
+        stroke: none;
+      }
+      path.area {
+        fill: #e7e7e7;
+      }
+      
+      .legend text {
+        fill: #808488;
+      }
+      
+      .line {
+        fill: none;
+        stroke: steelblue;
+        stroke-width: 1.5px;
+      }
+      
+      .title {
+        font-size: 2em;
+      }
+      
+      .linechart {
+        margin-bottom: 20px;
+        position: relative;
+        height: 600px;
+      }
+      
+      .linechart h1 {
+        margin: 0;
+        position: absolute;
+        top: 0;
+        left: 0;
+        font-size: 32pt;
+        color: silver;
+      }
+      </style>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.8.3/jquery.min.js"></script>
+    <script src="http://d3js.org/d3.v3.js"></script>
+    <script>
+      
+      function display_tsv(filename, title, target) {
+        
+        var margin = {top: 80, right: 180, bottom: 80, left: 80},
+        width = $(target).innerWidth(),
+        height = $(target).innerHeight(),
+        chart_width = width - margin.left - margin.right,
+        chart_height = height - margin.top - margin.bottom;
+        
+        var x = d3.scale.linear()
+        .range([0, chart_width]);
+        
+        var y = d3.scale.linear()
+        .range([chart_height, 0]);
+        
+        var color = d3.scale.category10();
+        var colorHost = d3.scale.category20();
+        
+        var xAxis = d3.svg.axis()
+        .scale(x)
+        .orient("bottom");
+        
+        var yAxis = d3.svg.axis()
+        .scale(y)
+        .tickSize(-chart_width)
+        .orient("left");
+        
+        var line = d3.svg.line()
+        .interpolate("basis")
+        .x(function(d) { return x(d.num); })
+        .y(function(d) { return y(d.csize); });
+        
+        $(target).append("<h1>"+title+"</h1>");
+        
+        var svg = d3.select(target).append("svg")
+        .attr("width", width)
+        .attr("height", height)
+        .append("g")
+        .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+        
+        d3.tsv(filename, function(error, data) {
+               var lines = d3.keys(data[0])
+               .filter(function(key) { return key !== "num" && key !== "host"; });
+               color.domain(lines);
+               
+               var items = color.domain().map(function(name) {
+                                              return {
+                                              name: name,
+                                              values: data.map(function(d) {
+                                                               return {num: d.num, csize: +d[name]};
+                                                               })
+                                              };
+                                              });
+               
+               // x scale
+               x.domain([0, data.length]);
+               
+               // y scale
+               var ymin = d3.min(items, function(c) {
+                                 return d3.min(c.values, function(v) { return v.csize; });
+                                 });
+               var ymax = d3.max(items, function(c) {
+                             return d3.max(c.values, function(v) { return v.csize; });
+                             });
+               y.domain([ ymin, ymax ]);
+               
+               // x axis
+               svg.append("g")
+               .attr("class", "x axis")
+               .attr("transform", "translate(0," + chart_height + ")")
+               .call(xAxis)
+               .append("text")
+               .attr("x", 6)
+               .attr("y", 26)
+               .attr("dx", ".71em")
+               .style("text-anchor", "start");
+               
+               // y axis
+               svg.append("g")
+               .attr("class", "y axis")
+               .call(yAxis)
+               .append("text")
+               .attr("transform", "rotate(-90)")
+               .attr("x", -(chart_height/2))
+               .attr("y", -40)
+               .attr("dy", ".71em")
+               .style("text-anchor", "end")
+               .text("compressed size, bytes");
+               
+               var proc = svg.selectAll(".num")
+               .data(items)
+               .enter().append("g")
+               .attr("class", "num");
+               
+               // lines
+               proc.append("path")
+               .attr("class", "line")
+               .attr("d", function(d) { return line(d.values); })
+               .style("stroke", function(d) { return color(d.name); });
+               
+               // line labels
+               proc.append("text")
+               .datum(function(d) {
+                      return {name: d.name, value: d.values[d.values.length - 1]};
+                      })
+               .attr("transform", function(d) {
+                     return "translate(" + x(d.value.num) + "," + y(d.value.csize) + ")";
+                     })
+               .attr("x", 15)
+               .attr("dy", ".35em")
+               .style("fill", function(d) { return color(d.name); })
+               .text(function(d) { return d.name; });
 
-body {
-  font: 10px sans-serif;
-}
+               // draw host dots on x axis
+               svg.selectAll(".dot")
+               .data(data)
+               .enter().append("circle")
+               .attr("class", "dot")
+               .attr("r", 3)
+               .attr("cx", function(d) { return x(d.num); })
+               .attr("cy", function(d) { return y(Math.max(0, ymin)); })
+               .style("fill", function(d) { return colorHost(d.host); });
+               
+               var legend = svg.selectAll(".legend")
+               .data(colorHost.domain())
+               .enter().append("g")
+               .attr("class", "legend")
+               .attr("transform", function(d, i) { return "translate(0," + (i * 10 - 60) + ")"; });
+               
+               legend.append("rect")
+               .attr("x", width - 118)
+               .attr("width", 9)
+               .attr("height", 9)
+               .style("fill", colorHost);
+               
+               legend.append("text")
+               .attr("x", width - 124)
+               .attr("y", 4)
+               .attr("dy", ".35em")
+               .style("text-anchor", "end")
+               .text(function(d) { return d; });
 
-.axis path,
-.axis line {
-  fill: none;
-  stroke: #000;
-  shape-rendering: crispEdges;
-}
-
-.x.axis path  {
-  stroke: black;
-}
-
-.y.axis line {
-  stroke: #eee;
-}
-
-.y.axis path {
-  stroke: none;
-}
-path.area {
-  fill: #e7e7e7;
-}
-
-.line {
-  fill: none;
-  stroke: steelblue;
-  stroke-width: 1.5px;
-}
-
-.title {
-  font-size: 2em;
-}
-
-</style>
-<body>
-<script src="http://d3js.org/d3.v3.js"></script>
-<script>
-
-function display_tsv(filename, title) {
-
-  var margin = {top: 80, right: 180, bottom: 80, left: 80},
-      width = 1200 - margin.left - margin.right,
-      height = 600 - margin.top - margin.bottom;
-
-  var x = d3.scale.linear()
-      .range([0, width]);
-
-  var y = d3.scale.linear()
-      .range([height, 0]);
-
-  var color = d3.scale.category10();
-
-  var xAxis = d3.svg.axis()
-      .scale(x)
-      .orient("bottom");
-
-  var yAxis = d3.svg.axis()
-      .scale(y)
-      .tickSize(-width)
-      .orient("left");
-
-  var line = d3.svg.line()
-      .interpolate("basis")
-      .x(function(d) { return x(d.num); })
-      .y(function(d) { return y(d.csize); });
-
-  var svg = d3.select("body").append("svg")
-      .attr("width", width + margin.left + margin.right)
-      .attr("height", height + margin.top + margin.bottom)
-      .append("g")
-      .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
-
-  d3.tsv(filename, function(error, data) {
-    var lines = d3.keys(data[0]).filter(function(key) { return key !== "num"; })
-    color.domain(lines);
-
-    var items = color.domain().map(function(name) {
-      return {
-        name: name,
-        values: data.map(function(d) {
-          return {num: d.num, csize: +d[name]};
-        })
-      };
-    });
-
-    // x scale
-    x.domain([0, data.length]);
-
-    // y scale
-    y.domain([
-      d3.min(items, function(c) { 
-        return d3.min(c.values, function(v) { return v.csize; }); 
-      }),
-      d3.max(items, function(c) { 
-        return d3.max(c.values, function(v) { return v.csize; }); 
-      })
-    ]);
-
-    // x axis
-    svg.append("g")
-        .attr("class", "x axis")
-        .attr("transform", "translate(0," + height + ")")
-        .call(xAxis)
-      .append("text")
-        .attr("x", 6)
-        .attr("y", 26)
-        .attr("dx", ".71em")
-        .style("text-anchor", "start");
-
-    // y axis
-    svg.append("g")
-        .attr("class", "y axis")
-        .call(yAxis)
-      .append("text")
-        .attr("transform", "rotate(-90)")
-        .attr("x", -(height/2))
-        .attr("y", -40)
-        .attr("dy", ".71em")
-        .style("text-anchor", "end")
-        .text("compressed size, bytes");
-
-    // title
-    svg.append("g")
-        .attr("class", "title")
-        .append("text")
-        .attr("x", (width/2))
-        .attr("y", -30)
-        .text(title);
-
-    var proc = svg.selectAll(".num")
-        .data(items)
-        .enter().append("g")
-        .attr("class", "num");
-
-    // lines
-    proc.append("path")
-        .attr("class", "line")
-        .attr("d", function(d) { return line(d.values); })
-        .style("stroke", function(d) { return color(d.name); });
-
-    // line labels
-    proc.append("text")
-        .datum(function(d) {
-          return {name: d.name, value: d.values[d.values.length - 1]}; 
-        })
-        .attr("transform", function(d) { 
-          return "translate(" + x(d.value.num) + "," + y(d.value.csize) + ")"; 
-        })
-        .attr("x", 15)
-        .attr("dy", ".35em")
-        .style("fill", function(d) { return color(d.name); })
-        .text(function(d) { return d.name; });
-  });
-}
-display_tsv('req.tsv', 'Requests');
-display_tsv('res.tsv', 'Responses');
-
-</script>
+               });
+      }
+      
+      $().ready(function() {
+                var params = {},
+                query = window.location.search;
+                
+                if (query) {
+                var parts;
+                if (query.indexOf('?') === 0) {
+                query = query.slice(1);
+                }
+                $.each(query.split('&'), function(index, param) {
+                       parts = param.split('=');
+                       if (parts) {
+                       params[parts[0]] = parts[1];
+                       }
+                       });
+                }
+                
+                var site = params.site || '';
+                var fname = site? ('results/' + site + '.') : '';
+                function drawCharts() {
+                  display_tsv(fname + 'req.tsv', site + ' requests', '#req');
+                  display_tsv(fname + 'res.tsv', site + ' responses', '#res');
+                }
+                
+                drawCharts();
+                $(window)
+                .resize(function() {
+                        $('#req').html('');
+                        $('#res').html('');
+                        drawCharts();
+                        });
+                });
+      </script>
+  </head>
+  <body>
+    <div class="page">
+      <h1>http/2 header compressions</h1>
+      <div>
+        <div id="req" class="linechart"></div>
+        <div id="res" class="linechart"></div>
+      </div>
+    </div>
+  </body>
+</html>
