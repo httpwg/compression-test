@@ -14,10 +14,12 @@ Tests various HTTP header compression algorithms, to compare them.
 
 from collections import defaultdict
 from importlib import import_module
+import itertools
 import locale
 import optparse
 import sys
 import os.path
+import fnmatch, re
 
 import harfile
 
@@ -25,6 +27,43 @@ if os.name == "nt":
   locale.setlocale(locale.LC_ALL, 'english-us')
 else:
   locale.setlocale(locale.LC_ALL, 'en_US')
+
+class Connection(object):
+  """
+    A simulated http connection with its own set of header compressors
+    """
+
+  def __init__(self, name, compressors, glob):
+    self.name = name
+    self.compressors = compressors
+    self.glob = glob
+    self.patterns = []
+    self.tlds = []
+      
+    for s in re.split('/', name):
+      m = None
+      if s.startswith('*'):
+        self.patterns.append(re.compile(fnmatch.translate(s)))
+        m = re.match('\*(.*\.)?([^.]+\.[^.]+)\.?', s)
+      elif re.search('\\\.', s):
+        self.patterns.append(re.compile(s))
+        m = re.match('(.*\.)?([^.]+\.[^.]+)\.?', re.sub('\\\.', '.', s))
+      elif self.glob:
+        self.patterns.append(re.compile(fnmatch.translate('*'+s)))
+        m = re.match('(.*\.)?([^.]+\.[^.]+)\.?', s)
+      if m:
+        self.tlds.append(m.group(2))
+
+  def matches(self, host):
+    
+    if True in itertools.ifilter(lambda x: x.match(host), self.patterns):
+      return True
+    if True in itertools.imap(host.endswith, self.tlds):
+      return True
+    return self.name == host
+
+
+
 
 class CompressionTester(object):
   """
@@ -39,7 +78,8 @@ class CompressionTester(object):
     self.ttls = None
     self.lname = 0  # longest processor name
     self.options, self.args = self.parse_options()
-    self.codec_processors = self.get_compressors()
+    self.codec_modules, self.codec_params = self.get_compressor_modules()
+    self.connections = self.init_connections()
     self.run()
 
       
@@ -53,6 +93,7 @@ class CompressionTester(object):
         messages.append(('req', req, req[':host']))
         messages.append(('res', res, req[':host']))
     self.ttls = self.process_messages(messages)
+    self.output("%i connections simulated to different hosts\n" % (len(self.connections.keys())))
     for msg_type in self.msg_types:
       self.print_results(self.ttls.get(msg_type, {}), msg_type, True)
     if self.options.tsv:
@@ -103,13 +144,13 @@ class CompressionTester(object):
     message_type is 'req' or 'res'.
     
     host is the host header of the associated request.
-    
     Returns a dictionary of processor names mapped to their results.
     Items in the dictionary whose names start with "_" are metadata.
     """
+    connection = self.get_connection(host)
     procs = [
       (name, proc[self.msg_types.index(message_type)]) for name, proc in \
-       self.codec_processors.items()
+        connection.compressors.items()
     ]
     results = {"_message_type": message_type}
     for name, processor in procs:
@@ -147,7 +188,7 @@ class CompressionTester(object):
           result['ratio'] = 1.0 * result['size'] / baseline_size
 
     if self.options.tsv:
-      self.tsv_results(results)
+      self.tsv_results(results, connection)
 
     if self.options.verbose >= 2 and not self.options.tsv:
       self.print_results(results, message_type)
@@ -198,7 +239,7 @@ class CompressionTester(object):
       self.output("-" * 80 + "\n")
         
 
-  def tsv_results(self, results):
+  def tsv_results(self, results, connection):
     """
     Store TSV; takes a record number and a results object.
     """
@@ -210,10 +251,10 @@ class CompressionTester(object):
     message_type = results["_message_type"]
     
     if len(self.tsv_out[message_type]) == 0:
-      self.tsv_out[message_type].append("num\t" + "\t".join(codecs) + "\n")
+      self.tsv_out[message_type].append("num\t" + "\t".join(codecs) + "\tconnection\n")
     
     self.tsv_out[message_type].append(
-      "%s\n" % "\t".join([str(item) for item in items])
+      "%s\t%s\n" % ("\t".join([str(item) for item in items]), connection.name)
     )
 
 
@@ -231,11 +272,13 @@ class CompressionTester(object):
       tfh.close()
 
 
-  def get_compressors(self):
+  def get_compressor_modules(self):
     """
-    Get a hash of codec names to processors.
-    """
-    codec_processors = {}
+      Get a hash of codec names to modules.
+      Get a hash of codec names to codec params.
+      """
+    codec_modules = {}
+    codec_params = {}
     for codec in self.options.codec:
       if "=" in codec:
         module_name, param_str = codec.split("=", 1)
@@ -247,13 +290,50 @@ class CompressionTester(object):
         params = []
       if len(module_name) > self.lname:
         self.lname = len(module_name)
-      module = import_module("compressor.%s" % module_name)
-      codec_processors[module_name] = ( # same order as self.msg_types
-        module.Processor(self.options, True, params),
-        module.Processor(self.options, False, params)
-      )
-    return codec_processors
+      codec_modules[module_name] = import_module("compressor.%s" % module_name)
+      codec_params[module_name] = params
+    return codec_modules, codec_params
+  
+  def get_compressors(self):
+    """
+      Get a fresh initialed set of compressor codecs
+      """
+    compressors = {}
+    for name, module in self.codec_modules.items():
+      params = self.codec_params[name]
+      compressors[name] = ( # same order as self.msg_types
+                           module.Processor(self.options, True, params),
+                           module.Processor(self.options, False, params)
+                           )
+    return compressors
+  
+  def get_connection(self, host):
+    """
+      Get the name of the connection used for talking to a certain host.
+      """
+    if host in self.connections:
+      return self.connections[host]
+    
+    for c in self.connections.values():
+      if c.matches(host):
+        return c
+  
+    conn = Connection(host, self.get_compressors(), self.options.glob)
+    self.connections[host] = conn
+    if self.options.verbose > 0:
+      print 'new connection %s [%s]' % (conn.name, ', '.join(conn.tlds))
+  
+    return conn
 
+  def init_connections(self):
+    connections = {}
+    for pattern in self.options.multiplex:
+      connections[pattern] = Connection(pattern, self.get_compressors(), self.options.glob)
+    if self.options.verbose > 0:
+      for conn in connections.values():
+        print 'initial connection %s [%s]' % (conn.name, ', '.join(conn.tlds))
+    return connections
+  
   @staticmethod
   def parse_options():
     "Parse command-line options and return (options, args)."
@@ -277,6 +357,23 @@ class CompressionTester(object):
                   help='baseline codec to base comparisons upon. '
                   '(default: %default)',
                   default='http1')
+    optp.add_option('-m', '--multiplex',
+                  action='append',
+                  dest='multiplex',
+                  metavar='PATTERN[/PATTERN]',
+                  help='multiplex matching hosts onto same connection. '
+                  'e.g. -m *yahoo.com,*.yimg.com ("-m *" to simulate a single'
+                  ' connection, PATTERN is a UNIX filename pattern or '
+                  'a regex containing \. or simply a string. Separate multiple '
+                  'patterns for the same connection by /)',
+                  default=[])
+    optp.add_option('-n', '--noglob',
+                  action='store_false',
+                  dest='glob',
+                  help='do not reuse connections for hosts in the same top level '
+                  'domain. Otherwise a connection to www1.exmple.org is also used '
+                  'for www2.example.org.',
+                  default=True)
     optp.add_option('-t', '--tsv',
                   action="store_true",
                   dest="tsv",
