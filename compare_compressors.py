@@ -245,10 +245,12 @@ class CompressionTester(object):
       else:
         module_name = codec
         params = []
-      if len(module_name) > self.lname:
-        self.lname = len(module_name)
+      # Replaced module_name by codec to allow for multiple run of same
+      # codec with different options.
+      if len(codec) > self.lname:
+        self.lname = len(codec)
       module = import_module("compressor.%s" % module_name)
-      codec_processors[module_name] = ( # same order as self.msg_types
+      codec_processors[codec] = ( # same order as self.msg_types
         module.Processor(self.options, True, params),
         module.Processor(self.options, False, params)
       )
