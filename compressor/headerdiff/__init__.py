@@ -115,8 +115,17 @@ class Processor(BaseProcessor):
     return frame
   
   def decompress(self, compressed):
-    hdrs = self.codec.decodeHeaders(compressed, self.is_request)
-    hdrs = dict(hdrs)
+    headers = self.codec.decodeHeaders(compressed, self.is_request)
+    hdrs = {}
+    for k, v in headers:
+      if k in hdrs:
+        if k == "cookie":
+          pass
+          hdrs[k] += ";" + v
+        else:
+          hdrs[k] += "\0" + v
+      else:
+        hdrs[k] = v
     
     # Split "url".
     if self.is_request:
