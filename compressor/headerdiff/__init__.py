@@ -25,9 +25,11 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import collections
 import zlib
 
 from headerDiffCodec import HeaderDiffCodec, IndexedHeader
+from headerDiffCodec import DELTA_FULL, DELTA_BOUND, DELTA_MAX
 
 from .. import BaseProcessor,  spdy_dictionary
 
@@ -53,7 +55,7 @@ class HeaderTuple(object):
       if k == "cookie":
         lst.extend(HeaderTuple(k, vs.strip()) for vs in v.split(";"))
       else:
-        lst.append(HeaderTuple(k, v))
+        lst.extend(HeaderTuple(k, vs.strip()) for vs in v.split("\0"))
     return lst
   
   def __str__(self):
@@ -64,10 +66,40 @@ class HeaderTuple(object):
 
 BUFFER_SIZE = "buffer"
 DEFLATE_SIZE = "deflate"
+DELTA_USAGE = "delta"
+DELTA_TYPE = "delta_type"
+HUFFMAN = "huffman"
+
+def parse_bool(value):
+  if value is None:
+    return True
+  if value.lower() == "false":
+    return False
+  else:
+    return True
+
+def parse_delta(value):
+  if value is None:
+    return DELTA_FULL, ""
+
+  value = value.strip()
+  try:
+    vint = int(value)
+    return DELTA_MAX, vint
+  except ValueError:
+    pass
+  
+  if value:
+    return DELTA_BOUND, value.strip("\"'")
+  else:
+    return DELTA_FULL, ""
 
 param_functions = {
   BUFFER_SIZE: int,
   DEFLATE_SIZE: int,
+  DELTA_USAGE: parse_bool,
+  DELTA_TYPE: parse_delta,
+  HUFFMAN: parse_bool,
 }
 
 #####################################################
@@ -80,6 +112,9 @@ class Processor(BaseProcessor):
     param_dict = {
       BUFFER_SIZE: 32768,
       DEFLATE_SIZE: None,
+      DELTA_USAGE: True,
+      DELTA_TYPE: (DELTA_FULL, ""),
+      HUFFMAN: False,
     }
     for param in params:
       if "=" in param:
@@ -92,11 +127,18 @@ class Processor(BaseProcessor):
       else:
         param_dict[name] = value
     
-    self.codec = HeaderDiffCodec(
-      param_dict[BUFFER_SIZE],
-      windowSize=param_dict[DEFLATE_SIZE],
-      dict=spdy_dictionary.spdy_dict,
-      )
+    def create_codec():
+      return HeaderDiffCodec(
+        param_dict[BUFFER_SIZE],
+        windowSize=param_dict[DEFLATE_SIZE],
+        dict=spdy_dictionary.spdy_dict,
+        delta_usage=param_dict[DELTA_USAGE],
+        delta_type=param_dict[DELTA_TYPE],
+        huffman=param_dict[HUFFMAN],
+        isRequest=is_request,
+        )
+    self.codecs = collections.defaultdict(create_codec)
+    self.last_codec = None
   
   def compress(self, in_headers, host):
     hdrs = dict(in_headers)
@@ -111,11 +153,13 @@ class Processor(BaseProcessor):
       hdrs["url"] = scheme + "://" + host + path
     
     hdrs = HeaderTuple.split_from_dict(hdrs)
-    frame = self.codec.encodeHeaders(hdrs, self.is_request)
+    codec = self.codecs[host]
+    self.last_codec = codec
+    frame = codec.encodeHeaders(hdrs, self.is_request)
     return frame
   
   def decompress(self, compressed):
-    headers = self.codec.decodeHeaders(compressed, self.is_request)
+    headers = self.last_codec.decodeHeaders(compressed, self.is_request)
     hdrs = {}
     for k, v in headers:
       if k in hdrs:

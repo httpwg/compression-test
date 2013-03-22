@@ -33,6 +33,30 @@ This implementation does not target efficiency but readability.
 from struct import pack, unpack
 import zlib
 
+from Huffman import request_codec, response_codec
+
+# Different types of Delta-encoding
+DELTA_FULL = "delta_full"   # Full Delta encoding
+DELTA_BOUND = "delta_bound" # Delta encoding, with constraints on prefix end
+DELTA_MAX = "delta_max"     # Delta encoding, with constraints on number of 
+                            # references.
+
+def common_prefix(s1, s2):
+  l = min(len(s1), len(s2))
+  for i in range(0, l):
+    if s1[i] != s2[i]:
+      return i
+  return l
+
+def common_prefix_limited(s1, s2, limits):
+  l = common_prefix(s1, s2)
+  for i in range(l, 0, -1):
+    if s1[i-1] in limits:
+#      print("  ({}) => {}:{} -> {}:{}".format(limits, l, s1[:l], i, s1[:i]))
+      return i
+#  print("  ({}) => {}:{} -> {}:{}".format(limits, l, s1[:l], 0, s1[:0]))
+  return 0
+
 class IndexedHeader(object):
   """
   Class used by Encoder for storing indexed headers
@@ -46,6 +70,8 @@ class IndexedHeader(object):
     self.full = name + value
     # Age is used by encoder when determining header representation
     self.age = 0
+    # Number of usage as a reference for a delta-encoding
+    self.delta_usage = 0
 
 class HeaderRepresentation(object):
   """
@@ -65,7 +91,11 @@ class HeaderDiffCodec(object):
   """
   def __init__(self, maxIndexedSize,
       windowSize=None,
-      dict=None):
+      dict=None,
+      delta_usage=True,
+      delta_type=(DELTA_FULL, ""),
+      huffman=False,
+      **kwargs):
     # Maximum size of indexed headers
     # Size is measured as the sum of the header values indexed in the
     # header table (see Section 3.1.1 Header Table)
@@ -73,6 +103,18 @@ class HeaderDiffCodec(object):
     # Deflate parameters (optional)
     self.windowSize = windowSize
     self.dictionary = dict
+    self.delta_usage = delta_usage
+    self.delta_type, self.delta_param = delta_type
+    if self.delta_type == DELTA_BOUND:
+      self.delta_param = self.delta_param.replace("\\coma", ",")
+    self.huffman = huffman
+    if self.huffman:
+      self.request_codec = request_codec
+      self.response_codec = response_codec
+      
+    self.isRequest = kwargs["isRequest"]
+#    print("Usage: {}, Type: {}, Param: '{}'".format(self.delta_usage,
+#      self.delta_type, self.delta_param))
     # Initialize other variables
     self.initCodec()
 
@@ -287,10 +329,17 @@ class HeaderDiffCodec(object):
     Method for decoding a literal string value
     (see Section 4.1.2 String Literal Representation).
     """
-    length = self.readInteger(0, 0) # No prefix bits
-    value = self.decodedStream[self.decodedStreamIndex:
-                               self.decodedStreamIndex+length]
-    self.decodedStreamIndex+= length
+    if self.huffman:
+      if self.isRequest:
+        value, length = self.request_codec.decode(self.decodedStream[self.decodedStreamIndex:])
+      else:
+        value, length = self.response_codec.decode(self.decodedStream[self.decodedStreamIndex:])
+      self.decodedStreamIndex += length
+    else:
+      length = self.readInteger(0, 0) # No prefix bits
+      value = self.decodedStream[self.decodedStreamIndex:
+                                 self.decodedStreamIndex+length]
+      self.decodedStreamIndex+= length
     return value
 
   ######################
@@ -369,7 +418,7 @@ class HeaderDiffCodec(object):
         ## Serialize using delta or literal representation         ##
         ## (see Sections 4.3 Literal Header and 4.4 Delta Header)  ##
         #############################################################
-        if hr.representation == DELTA_REPRESENTATION:
+        if self.delta_usage and hr.representation == DELTA_REPRESENTATION:
           # Delta Representation (see Sections 4.4.1 and 4.4.2)
           # Set '01' at the beginning of the byte
           # (delta representation)
@@ -378,6 +427,7 @@ class HeaderDiffCodec(object):
           self.writeInteger(b, prefixBits, hr.referenceHeader.index)
           # Encode common prefix length
           self.writeInteger(b, 0, hr.commonPrefixLength)
+          hr.referenceHeader.delta_usage += 1
         else:
           # Literal Representation (see Sections 4.3.1 / 4.3.2)
           # '00' at the beginning of the byte (nothing to do)
@@ -396,7 +446,7 @@ class HeaderDiffCodec(object):
           if hr.indexing == SUBSTITUTION_INDEXING:
             self.writeInteger(b, 0, hr.referenceHeader.index)
         # Encode value
-        if hr.representation == DELTA_REPRESENTATION:
+        if self.delta_usage and hr.representation == DELTA_REPRESENTATION:
           valueToEncode = headerValue[hr.commonPrefixLength:]
         else:
           valueToEncode = headerValue
@@ -431,15 +481,17 @@ class HeaderDiffCodec(object):
     for hf in self.headersTableEncoder:
       indexedHeader = self.headersTableEncoder[hf]
       if indexedHeader.name == headerName:
+        if self.delta_type == DELTA_MAX and indexedHeader.delta_usage >= self.delta_param:
+          continue
         # Determine common prefix length between value to encode and
         # indexed header value
         iv = indexedHeader.value
-        k = 0
-        while k < min(len(headerValue), len(iv)):
-          if headerValue[k] == iv[k]:
-            k+= 1
-          else:
-            break
+        if self.delta_type == DELTA_FULL:
+          k = common_prefix(headerValue, iv)
+        elif self.delta_type == DELTA_BOUND:
+          k = common_prefix_limited(headerValue, iv, self.delta_param)
+        else:
+          k = common_prefix(headerValue, iv)
         if k >= commonPrefixLength:
           commonPrefixLength = k
           deltaSubstitutionHeader = indexedHeader
@@ -473,6 +525,7 @@ class HeaderDiffCodec(object):
       hr.representation = DELTA_REPRESENTATION
       hr.referenceHeader = deltaSubstitutionHeader
       hr.commonPrefixLength = commonPrefixLength
+      
       isNovel = deltaSubstitutionAddedLength > 15
       if not requireNovelty:
         isNovel = True
@@ -540,8 +593,15 @@ class HeaderDiffCodec(object):
     Method for literally encoding a string value
     (see Section 4.1.2 String Literal Representation)
     """
-    self.writeInteger(0, 0, len(value))
-    self.encodedStream+= str(value)
+    if self.huffman:
+      if self.isRequest:
+        code = self.request_codec.encode(value)
+      else:
+        code = self.response_codec.encode(value)
+      self.encodedStream += code
+    else:
+      self.writeInteger(0, 0, len(value))
+      self.encodedStream+= str(value)
 
 
 # Maximum values that can be encoded for prefixes of a given length
