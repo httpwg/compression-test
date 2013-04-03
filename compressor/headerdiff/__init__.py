@@ -127,59 +127,33 @@ class Processor(BaseProcessor):
       else:
         param_dict[name] = value
     
-    def create_codec():
-      return HeaderDiffCodec(
-        param_dict[BUFFER_SIZE],
-        windowSize=param_dict[DEFLATE_SIZE],
-        dict=spdy_dictionary.spdy_dict,
-        delta_usage=param_dict[DELTA_USAGE],
-        delta_type=param_dict[DELTA_TYPE],
-        huffman=param_dict[HUFFMAN],
-        isRequest=is_request,
-        )
-    self.codecs = collections.defaultdict(create_codec)
-    self.last_codec = None
+    self.codec = HeaderDiffCodec(
+      param_dict[BUFFER_SIZE],
+      windowSize=param_dict[DEFLATE_SIZE],
+      dict=spdy_dictionary.spdy_dict,
+      delta_usage=param_dict[DELTA_USAGE],
+      delta_type=param_dict[DELTA_TYPE],
+      huffman=param_dict[HUFFMAN],
+      isRequest=is_request,
+      )
   
   def compress(self, in_headers, host):
     hdrs = dict(in_headers)
-    # Concat ":scheme", ":host" and ":path" into "url".
-    if self.is_request:
-      scheme = hdrs.get(":scheme", "http")
-      del hdrs[":scheme"]
-      host = hdrs.get(":host", "")
-      del hdrs[":host"]
-      path = hdrs.get(":path", "")
-      del hdrs[":path"]
-      hdrs["url"] = scheme + "://" + host + path
-    
     hdrs = HeaderTuple.split_from_dict(hdrs)
-    codec = self.codecs[host]
-    self.last_codec = codec
-    frame = codec.encodeHeaders(hdrs, self.is_request)
+    
+    frame = self.codec.encodeHeaders(hdrs, self.is_request)
     return frame
   
   def decompress(self, compressed):
-    headers = self.last_codec.decodeHeaders(compressed, self.is_request)
+    headers = self.codec.decodeHeaders(compressed, self.is_request)
     hdrs = {}
     for k, v in headers:
       if k in hdrs:
         if k == "cookie":
-          pass
           hdrs[k] += ";" + v
         else:
           hdrs[k] += "\0" + v
       else:
         hdrs[k] = v
     
-    # Split "url".
-    if self.is_request:
-      url = hdrs.get("url")
-      del hdrs["url"]
-      scheme, hp = url.split(":", 1)
-      host, path = hp[2:].split("/", 1)
-      path = "/" + path
-      hdrs[":scheme"] = scheme
-      hdrs[":host"] = host
-      hdrs[":path"] = path
-
     return hdrs

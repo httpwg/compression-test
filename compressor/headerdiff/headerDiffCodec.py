@@ -93,7 +93,7 @@ class HeaderDiffCodec(object):
       windowSize=None,
       dict=None,
       delta_usage=True,
-      delta_type=(DELTA_FULL, ""),
+      delta_type=(DELTA_BOUND, "/&= \coma"),
       huffman=False,
       **kwargs):
     # Maximum size of indexed headers
@@ -172,7 +172,7 @@ class HeaderDiffCodec(object):
     """
     Method for decoding a set of headers.
     """
-    self.decodedStream = stream
+    self.decodedStream = stream[8:]
     self.decodedStreamIndex = 0
     # If Deflate was used, apply Inflate
     if self.windowSize != None:
@@ -356,6 +356,7 @@ class HeaderDiffCodec(object):
     # Set the right table
     headerNamesTable = (self.headerNamesEncoderRequestTable if isRequest
                         else self.headerNamesEncoderResponseTable)
+
     # First, encode the number of headers (single byte)
     self.encodedStream = pack("!B", len(headerTuples))
     # Then, encode headers
@@ -451,13 +452,17 @@ class HeaderDiffCodec(object):
         else:
           valueToEncode = headerValue
         self.writeLiteralString(valueToEncode)
+
     # Return encoded headers
     if self.windowSize != None:
       data = self.comp.compress(self.encodedStream)
       data += self.comp.flush(zlib.Z_SYNC_FLUSH)
-      return data
     else:
-      return self.encodedStream
+      data = self.encodedStream
+    
+    # Generate Frame Header
+    frame = pack("!HBBL", len(data), 0, 0, 0)
+    return frame + data
 
   def determineRepresentation(self, headerName, headerValue, isRequest):
     """
@@ -471,48 +476,42 @@ class HeaderDiffCodec(object):
     if headerFull in self.headersTableEncoder:
       hr.representation = INDEXED_REPRESENTATION
       hr.referenceHeader = self.headersTableEncoder[headerFull]
+      hr.referenceHeader.age = 0
       return hr
+
+    if not self.delta_usage and headerName == ':path':
+      return hr
+    
     # Check possibility for delta representation
     deltaSubstitutionHeader = None
     # Length of common prefix in case of delta encoding
     commonPrefixLength = 0
     # Length added to indexed data in case of delta substitution indexing
     deltaSubstitutionAddedLength = 0
-    for hf in self.headersTableEncoder:
-      indexedHeader = self.headersTableEncoder[hf]
-      if indexedHeader.name == headerName:
-        if self.delta_type == DELTA_MAX and indexedHeader.delta_usage >= self.delta_param:
-          continue
-        # Determine common prefix length between value to encode and
-        # indexed header value
-        iv = indexedHeader.value
-        if self.delta_type == DELTA_FULL:
-          k = common_prefix(headerValue, iv)
-        elif self.delta_type == DELTA_BOUND:
-          k = common_prefix_limited(headerValue, iv, self.delta_param)
-        else:
-          k = common_prefix(headerValue, iv)
-        if k >= commonPrefixLength:
-          commonPrefixLength = k
-          deltaSubstitutionHeader = indexedHeader
-          deltaSubstitutionAddedLength = (
-            len(headerValue) - len(indexedHeader.value))
-    # Look for least recently used indexed header
-    # (it may be selected for literal substitution)
-    leastRecentlyUsedHeader = None
-    ageThreshold = 15
-    for hf in self.headersTableEncoder:
-      indexedHeader = self.headersTableEncoder[hf]
-      if indexedHeader.age > ageThreshold:
-        if (leastRecentlyUsedHeader == None
-          or indexedHeader.age > leastRecentlyUsedHeader.age):
-          leastRecentlyUsedHeader = indexedHeader
-    ##################################################
-    ## Determine encoding mode based on parameters  ##
-    ##################################################
-    # Check whether indexing this header would be ok with size constraint
-    lengthOK = (self.headersTableEncoderSize + len(headerValue)
-                < self.indexedHeadersMaxSize)
+    
+    if self.delta_usage:
+      for hf in self.headersTableEncoder:
+        indexedHeader = self.headersTableEncoder[hf]
+        if indexedHeader.name == headerName:
+          if self.delta_type == DELTA_MAX and indexedHeader.delta_usage >= self.delta_param:
+            continue
+          # Determine common prefix length between value to encode and
+          # indexed header value
+          iv = indexedHeader.value
+          if self.delta_type == DELTA_FULL:
+            k = common_prefix(headerValue, iv)
+          elif self.delta_type == DELTA_BOUND:
+            k = common_prefix_limited(headerValue, iv, self.delta_param)
+          else:
+            k = common_prefix(headerValue, iv)
+          if k >= commonPrefixLength:
+            commonPrefixLength = k
+            deltaSubstitutionHeader = indexedHeader
+            deltaSubstitutionAddedLength = (
+              len(headerValue) - len(indexedHeader.value))
+
+    lengthOK = (self.headersTableEncoderSize + len(headerValue) < self.indexedHeadersMaxSize)
+
     # Check whether replacing best match by this header in indexed
     # headers table would be ok
     deltaSubstitutionLengthOK = (
@@ -533,23 +532,34 @@ class HeaderDiffCodec(object):
         hr.indexing = INCREMENTAL_INDEXING
       elif deltaSubstitutionLengthOK:
         hr.indexing = SUBSTITUTION_INDEXING
-    else:
-      # Use literal encoding
-      # Substitution is used only for requests with "small" table size
-      if (isRequest
-        and self.indexedHeadersMaxSize < 10000
-        and leastRecentlyUsedHeader != None):
-        # Determine whether enough room is available for literal substitution
-        newDataLength = len(headerValue) - len(leastRecentlyUsedHeader.value)
-        remainingSize = (self.indexedHeadersMaxSize -
-                self.headersTableEncoderSize)
-        if remainingSize > newDataLength:
-          hr.indexing = SUBSTITUTION_INDEXING
-          hr.referenceHeader = leastRecentlyUsedHeader
-      elif lengthOK:
-        hr.indexing = INCREMENTAL_INDEXING
-    return hr
+      return hr
 
+    # If no delta encoding
+    if lengthOK:
+      hr.indexing = INCREMENTAL_INDEXING
+      return hr
+
+    # Look for least recently used indexed header
+    # (it may be selected for literal substitution)
+    lruh = None
+
+    for hf in self.headersTableEncoder:
+      indexedHeader = self.headersTableEncoder[hf]
+      if indexedHeader.age > 1:
+        addedDataLength = len(headerValue) - len(indexedHeader.value)
+        remainingSize = self.indexedHeadersMaxSize - self.headersTableEncoderSize
+        if addedDataLength < remainingSize:
+          if not lruh:
+            lruh = indexedHeader
+          elif indexedHeader.age > lruh.age:
+            lruh = indexedHeader
+
+    if lruh != None:
+        hr.indexing = SUBSTITUTION_INDEXING
+        hr.referenceHeader = lruh
+
+    return hr
+  
   # Remark: This method does not aim at handling all possible cases,
   # but only the ones that may occur according to format specification.
   def writeInteger(self, currentByte, prefixBits, integerValue):
@@ -628,7 +638,9 @@ REGISTERED_HEADERS_REQUESTS = [
     'host',
     'if-modified-since',
     'keep-alive',
-    'url',
+    ':host',
+    ':scheme',
+    ':path',
     'user-agent',
     ':version',
     'proxy-connection',
