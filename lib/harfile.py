@@ -13,14 +13,13 @@ Utilities to get harfiles into the shape we want them to be.
 import re
 import json
 import sys
-from urlparse import urlsplit
+from urllib.parse import urlsplit
 
 def read_har_file(filename):
   "Read filename and return the header dictionaries for it."
   fhandle = open(filename)
   try:
-    har = json.loads(fhandle.read(), object_hook=encode_strings)
-    # and now lets convert all strings to utf8.
+    har = json.loads(fhandle.read())
   except Exception as oops:
     sys.stderr.write("Unable to parse %s\n\n" % filename)
     sys.stderr.write(oops)
@@ -73,7 +72,7 @@ def process_headers(hdrdicts):
     name = hdrdict["name"].lower()
     val = hdrdict["value"]
     if not name:
-      raise StandardError()
+      raise Exception()
     if name == "host":
       name = ":host"
     if name in out:
@@ -85,15 +84,15 @@ def process_headers(hdrdicts):
 def encode_strings(inobj, encoding="latin-1"):
   "Encode strings in objects. Latin-1 is the default encoding for HTTP/1.x."
   retval = {}
-  for key, val in inobj.iteritems():
+  for key, val in inobj.items():
     if key in ['text', 'content']:
       continue
     else:
       n_k = key
-      if isinstance(key, unicode):
+      if isinstance(key, str):
         n_k = key.encode(encoding)
       n_v = val
-      if isinstance(val, unicode):
+      if isinstance(val, str):
         n_v = val.encode(encoding)
       retval[n_k] = n_v
   return retval

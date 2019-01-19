@@ -12,7 +12,7 @@ from compressor import format_http1
 def compare_headers_impl(a_input, b_input, ignores):
   def NormalizeDict(d):
     nd = set()
-    for k,v in d.iteritems():
+    for k,v in d.items():
       if k in ignores:
         continue
       if k == 'cookie':
@@ -75,7 +75,7 @@ class Processors(object):
       msg_idx += 1
       results = self.process_message(hdrs, session.msg_type,
                                      host, msg_idx, msg_tot)
-      for proc_name, resu in results.items():
+      for proc_name, resu in list(results.items()):
         if proc_name == self.options.baseline:
           ratio = 1.0
         else:
@@ -89,7 +89,7 @@ class Processors(object):
     if 'connection' in hdrs:
       ignore_hdrs.extend([x.strip(' ') for x in hdrs['connection'].split(',')])
 
-    for k,v in hdrs.iteritems():
+    for k,v in hdrs.items():
       if k in ignore_hdrs:
         continue
       new_hdrs[k] = v
@@ -131,7 +131,7 @@ class Processors(object):
       try:
         decompressed = processor.decompress(compressed)
       except NotImplementedError:
-        if processor.name not in self.warned.keys():
+        if processor.name not in list(self.warned.keys()):
           sys.stderr.write(
             "  WARNING: %s decompression not checked.\n" % processor.name
           )
@@ -141,7 +141,7 @@ class Processors(object):
         if decompressed is not None:
           txt = format_http1(decompressed)
         else:
-          txt = unicode(compressed, 'utf-8', 'replace') \
+          txt = str(compressed, 'utf-8', 'replace') \
                 .encode('utf-8', 'replace')
         self.output("%s" % txt)
         if not txt or txt[-1] != "\n":
@@ -158,7 +158,7 @@ class Processors(object):
     return results
 
   def done(self):
-    for processor_kind in self.processors.values():
+    for processor_kind in list(self.processors.values()):
       for processor in processor_kind:
         try:
           processor.done()

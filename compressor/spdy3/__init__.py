@@ -29,21 +29,21 @@ class Processor(BaseProcessor):
     """
     out_frame = []
     frame_len = 0
-    for (key, val) in request.iteritems():
+    for (key, val) in request.items():
       frame_len += 4
       frame_len += len(key)
       frame_len += 4
       frame_len += len(val)
     stream_id = 1
-    num_kv_pairs = len(request.keys())
+    num_kv_pairs = len(list(request.keys()))
 #    out_frame.append(struct.pack('!L', 0x1 << 31 | 0x11 << 15 | 0x8))
 #    out_frame.append(struct.pack('!L', frame_len))
 #    out_frame.append(struct.pack('!L', stream_id))
 #    out_frame.append(struct.pack('!L', num_kv_pairs))
-    for (key, val) in request.iteritems():
+    for (key, val) in request.items():
       out_frame.append(struct.pack('!L', len(key)))
-      out_frame.append(key)
+      out_frame.append(key.encode('ascii'))
       out_frame.append(struct.pack('!L', len(val)))
-      out_frame.append(val)
-    return ''.join(out_frame)
+      out_frame.append(val.encode('ascii'))
+    return b''.join(out_frame)
 

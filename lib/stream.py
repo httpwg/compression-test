@@ -63,7 +63,7 @@ class Stream(object):
 
   def print_tsv(self, output, count=0):
     "Print the stream as TSV to output, using count as a counter."
-    lines = apply(zip, [self.sizes[proc] for proc in self.procs])
+    lines = list(zip(*[self.sizes[proc] for proc in self.procs]))
     for line in lines:
       count += 1
       output("\t".join([str(count), self.name] + [str(j) for j in line]))

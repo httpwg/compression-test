@@ -65,7 +65,7 @@ def format_http1(frame,
     avoid_list = [':version', ':status', ':status-text']
   out_frame.append(top_line)
   
-  for (key, val) in frame.iteritems():
+  for (key, val) in frame.items():
     if key in avoid_list:
       continue
     if key == ':host':
@@ -93,7 +93,7 @@ def parse_http1(message, is_request, host='host'):
     else:
       name, value = line.split(":", 1)
     name = name.lower()
-    if out.has_key(name):
+    if name in out:
       out[name] += "\0" + value.strip()
     else:
       out[name] = value.strip()
@@ -101,7 +101,7 @@ def parse_http1(message, is_request, host='host'):
     out[':method'] = top_line[0]
     out[':path'] = top_line[1]
     out[':version'] = top_line[2].strip()
-    if out.has_key(host):
+    if host in out:
       out[':host'] = out[host]
       del out[host]
   else:

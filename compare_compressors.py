@@ -16,6 +16,8 @@ from collections import defaultdict
 from importlib import import_module
 import locale
 import optparse
+import operator
+from functools import reduce
 
 from lib.harfile import read_har_file
 from lib.processors import Processors
@@ -47,7 +49,7 @@ class CompressionTester(object):
     sessions = []
     for filename in self.args:
       har_requests, har_responses = read_har_file(filename)
-      messages = zip(har_requests, har_responses)
+      messages = list(zip(har_requests, har_responses))
       sessions.extend(self.streamify(messages))
     for session in sessions:
       if self.options.verbose > 0:
@@ -57,7 +59,7 @@ class CompressionTester(object):
         session.print_summary(self.output, self.options.baseline)
     self.processors.done()
     for msg_type in self.msg_types:
-      ttl_stream = sum([s for s in sessions if s.msg_type == msg_type])
+      ttl_stream = reduce(operator.add, [s for s in sessions if s.msg_type == msg_type])
       ttl_stream.name = "TOTAL"
       ttl_stream.print_header(self.output)
       ttl_stream.print_summary(self.output, self.options.baseline)
@@ -72,7 +74,7 @@ class CompressionTester(object):
       for session in sessions:
         tsvfh, tsv_count = out[session.msg_type]
         out[session.msg_type][1] = session.print_tsv(tsvfh.write, tsv_count)
-      for fh, count in out.values():
+      for fh, count in list(out.values()):
         fh.close()
 
   def load_streamifier(self, name):
